@@ -165,6 +165,9 @@ details.impc>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 12px;ali
 @keyframes flashout{0%,70%{outline-color:var(--y-s)}100%{outline-color:transparent}}
 @media (prefers-reduced-motion:reduce){.flash{animation:none}}
 @media (max-width:520px){ .impbar{padding-left:64px} .cad .impbar{flex:0 0 100%;margin-left:0} }
+.diag{margin-top:10px;font-size:13px;line-height:1.5}
+.diag div{padding:2px 0}
+.diag .na{color:var(--muted)}
 </style>
 </head>
 <body data-tab="25">
@@ -183,6 +186,8 @@ details.impc>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 12px;ali
       <label class="f">Web app URL<input id="fUrl" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <label class="f">Secret (the same word you put in the script)<input id="fTok" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
       <div class="tools"><button class="btn" id="bConnect">Connect</button><button class="btn" id="bDisc">Disconnect</button><button class="btn" id="bLink">Copy setup link for another device</button></div>
+      <div class="tools"><button class="btn" id="bTest">Test connection</button><button class="btn" id="bNow">Sync now</button></div>
+      <div id="diag" class="diag" aria-live="polite" hidden></div>
       <input id="fLink" type="text" readonly hidden aria-label="Setup link">
       <p class="hint">The setup link contains your URL and secret. Open it on your phone or another computer to connect there without typing, and don't post it anywhere public.</p>
       <h3>2. Backup file</h3>
@@ -430,7 +435,7 @@ function setSync(s,detail){
   syncState=s;
   const hm=()=>{const d=syncAt||new Date();return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})};
   const t={off:"Saved on this device only",loading:"Loading from Google...",saving:"Saving to Google...",
-           ok:"Synced to Google at "+hm(),error:"Can't reach Google - saved on this device, will retry"}[s];
+           ok:"Synced to Google at "+hm(),error:"Sync problem - saved on this device, will retry. Open Sync & backup > Test connection"}[s];
   $$("[data-sync]").forEach(e=>{e.textContent=t});
 }
 function msg(text,cls){const m=$("#syncMsg");m.textContent=text||"";m.className="hint "+(cls||"")}
@@ -542,7 +547,9 @@ document.addEventListener("click",e=>{
     if(sp&&g){const n=+sp.dataset.star,k=g.dataset.imp; setStar(k,(stars[k]||0)===n?0:n)}
     return;
   }
-  const t=e.target.closest("[data-tab],[data-act],[data-jump],[data-goto],[data-imin],#bConnect,#bDisc,#bLink,#bExport"); if(!t)return;
+  const t=e.target.closest("[data-tab],[data-act],[data-jump],[data-goto],[data-imin],#bConnect,#bDisc,#bLink,#bExport,#bTest,#bNow"); if(!t)return;
+  if(t.id==="bTest"){diagnose();return}
+  if(t.id==="bNow"){syncNow();return}
   if(t.dataset.goto){e.preventDefault();goTo(t.dataset.goto);return}
   if(t.dataset.imin){setImin(+t.dataset.imin);return}
   if(t.id==="bConnect"){doConnect();return}
@@ -568,6 +575,50 @@ async function doConnect(){
   const ok=await pull(true);
   if(ok){lsSet(LSC,JSON.stringify(conn));lsSet(LSC+"_seen","1");if(oldScriptWarned)msg("Connected, but your Google script is the old version. Paste the new Code.gs and deploy a new version to get the Log and Daily tabs.","bad"); else msg("Connected. Your ticks now sync with your Google Drive.","ok")}
   else{conn=null}
+}
+async function diagnose(){
+  const box=$("#diag"); box.hidden=false; box.textContent="";
+  const line=(cls,txt)=>{const d=document.createElement("div");d.className=cls;d.textContent=txt;box.appendChild(d)};
+  const u=$("#fUrl").value.trim()||(conn&&conn.u)||"", tk=$("#fTok").value.trim()||(conn&&conn.t)||"";
+  if(conn)line("ok","This browser has a saved Google connection.");
+  else line("bad","This browser has no saved Google connection. A new web address, a different browser or cleared site data starts empty - fill in the URL and secret above and press Connect.");
+  if(location.protocol==="file:")line("na","You opened this page as a file on your device. That works, but your ticks and connection belong to that exact file; a copy of the page somewhere else starts empty.");
+  if(!u){line("bad","The Web app URL is empty. Paste it above (Apps Script > Deploy > Manage deployments > Web app URL).");return}
+  if(!validUrl(u)){line("bad","The URL must start with https://script.google.com/ and end with /exec. Addresses ending in /dev, or the Apps Script editor address, will not work.");return}
+  if(!tk){line("bad","The secret is empty. Type the same word that is on the TOKEN line of Code.gs.");return}
+  const wait=document.createElement("div"); wait.className="na"; wait.textContent="Contacting your script..."; box.appendChild(wait);
+  let j;
+  try{
+    const res=await fetch(u,{method:"POST",body:JSON.stringify({action:"load",token:tk}),redirect:"follow"});
+    const txt=await res.text();
+    try{j=JSON.parse(txt)}catch(e){
+      wait.remove(); line("bad","Google answered with a web page instead of data. Usual causes: 'Who has access' on the deployment is not set to Anyone, the URL is not the /exec one, or the script has an error (Apps Script > Executions shows it).");return}
+  }catch(e){
+    wait.remove(); line("bad","Could not reach the script ("+String(e&&e.message||e)+"). Check your internet, VPN or ad-blocker. Also check that 'Who has access' is set to Anyone - Google blocks the request if it is not.");return}
+  wait.remove();
+  if(!j||!j.ok){
+    if(j&&j.error==="bad_token")line("bad","Reached your script, but the secret does not match the TOKEN line in Code.gs. If you just edited Code.gs, deploy it as a New version (Deploy > Manage deployments > pencil > New version).");
+    else line("bad","Your script answered with an error: "+((j&&j.error)||"unknown")+". Apps Script > Executions has the details.");
+    return}
+  line("ok","Reached your script and the secret matches.");
+  if(Array.isArray(j.daily))line("ok","The script is the new version (Log and Daily tabs).");
+  else line("bad","The script is the old version: ticks and stars sync, but there is no Log or Daily tab. Paste the new Code.gs and deploy it as a New version (not a New deployment).");
+  const r=j.data, rt=r&&Array.isArray(r.ticked)?r.ticked.filter(k=>ALL.has(k)).length:0, rs=r&&r.stars&&typeof r.stars==="object"?Object.keys(cleanStars(r.stars)).length:0;
+  const lt=state.size, ls=Object.keys(stars).length;
+  const pl=(n,w)=>n+" "+w+(n===1?"":"s");
+  line("na","Google has "+pl(rt,"tick")+" and "+pl(rs,"starred item")+". This device has "+pl(lt,"tick")+" and "+pl(ls,"starred item")+".");
+  if(pendingEv().length)line("na",pl(pendingEv().length,"tick")+" of day-history on this device "+(pendingEv().length===1?"is":"are")+" waiting to upload.");
+  if(rt!==lt||rs!==ls||pendingEv().length)line("na","These differ - press Sync now.");
+  else line("ok","Everything matches. Nothing is waiting to sync.");
+}
+async function syncNow(){
+  if(!conn){msg("Connect first (URL and secret above), then press Sync now.","bad");return}
+  if(busy||saving){msg("Already syncing - try again in a moment.","");return}
+  msg("Syncing...","");
+  const ok=await pull(false);
+  if(ok===false)return;                      /* pull() has already explained what went wrong */
+  dirty=true; await push();
+  if(syncState==="ok"&&!oldScriptWarned){const n=Object.keys(stars).length;msg("Synced. Google now has "+state.size+(state.size===1?" tick":" ticks")+" and "+n+(n===1?" starred item.":" starred items."),"ok")}
 }
 function makeLink(){
   if(!conn){msg("Connect first, then copy the setup link.","bad");return}
